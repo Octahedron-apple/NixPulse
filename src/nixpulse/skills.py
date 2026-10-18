@@ -234,6 +234,68 @@ class SkillRegistry:
             {"command": command},
         )
 
+    def _skill_tmux_control(self, params: Mapping[str, Any]) -> SkillResult:
+        action = params.get("action", "layout")
+        import subprocess
+
+        # If manager exists, use it; otherwise use direct tmux commands
+        try:
+            if action == "layout":
+                layout_name = params.get("layout", "main-horizontal")
+                # Map loose layout requests
+                layout_map = {
+                    "split": "even-horizontal",
+                    "even": "even-horizontal",
+                    "horizontal": "even-horizontal",
+                    "vertical": "even-vertical",
+                    "tile": "tiled",
+                    "tiled": "tiled",
+                }
+                for k, v in layout_map.items():
+                    if k in layout_name.lower():
+                        layout_name = v
+                        break
+                if self.tmux_manager:
+                    self.tmux_manager.set_layout(layout_name)
+                else:
+                    subprocess.run(["tmux", "select-layout", layout_name], check=True)
+                return SkillResult("tmux_control", True, f"Tmux window layout set to {layout_name!r}", {"layout": layout_name})
+
+            elif action == "split":
+                direction_arg = params.get("direction", "horizontal")
+                flag = "-v" if "vert" in direction_arg.lower() or direction_arg == "V" else "-h"
+                if self.tmux_manager and self.tmux_manager.window:
+                    from libtmux.window import PaneDirection
+                    p_dir = PaneDirection.Below if flag == "-v" else PaneDirection.Right
+                    new_p = self.tmux_manager.window.split(direction=p_dir)
+                    return SkillResult("tmux_control", True, f"Spawned new tmux pane: {new_p.id}", {"pane_id": new_p.id})
+                else:
+                    subprocess.run(["tmux", "split-window", flag], check=True)
+                    return SkillResult("tmux_control", True, f"Spawned new tmux pane with split {flag}")
+
+            elif action == "resize":
+                direction = params.get("direction", "U").upper()
+                flag = {"U": "-U", "D": "-D", "L": "-L", "R": "-R"}.get(direction, "-U")
+                cells = str(int(params.get("cells", 5)))
+                if self.tmux_manager:
+                    self.tmux_manager.resize_pane(direction=direction, cells=int(cells))
+                else:
+                    subprocess.run(["tmux", "resize-pane", flag, cells], check=True)
+                return SkillResult("tmux_control", True, f"Resized pane direction {direction} by {cells} cells")
+
+            elif action == "notify":
+                message = params.get("message", "NixPulse Alert")
+                if self.tmux_manager:
+                    self.tmux_manager.display_message(message)
+                else:
+                    subprocess.run(["tmux", "display-message", message], check=True)
+                return SkillResult("tmux_control", True, f"Flashed status message: {message}", {"message": message})
+
+            else:
+                return SkillResult("tmux_control", False, f"Unknown tmux action: {action}")
+        except Exception as exc:
+            return SkillResult("tmux_control", False, f"tmux command failed: {exc}", {"error": str(exc)})
+
     def _register_default_skills(self) -> None:
         self.register(
             SkillDefinition(
@@ -309,5 +371,46 @@ class SkillRegistry:
                     "required": ["command"],
                 },
                 handler=lambda reg, params: reg._skill_run_command(params),
+            )
+        )
+        self.register(
+            SkillDefinition(
+                name="tmux_control",
+                description="Modify the tmux war room session: change window layout, resize panes, or flash banner messages.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["layout", "split", "resize", "notify"],
+                            "description": "Tmux action to perform: 'layout' (change layout), 'split' (add a new pane), 'resize' (adjust pane dimensions), 'notify' (flash message)",
+                        },
+                        "layout": {
+                            "type": "string",
+                            "enum": ["main-horizontal", "even-horizontal", "tiled", "main-vertical", "even-vertical"],
+                            "description": "Layout name when action is 'layout'",
+                        },
+                        "target": {
+                            "type": "string",
+                            "enum": ["sandbox", "telemetry", "control"],
+                            "description": "Target pane for resizing",
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["U", "D", "L", "R"],
+                            "description": "Resize direction: U (Up), D (Down), L (Left), R (Right)",
+                        },
+                        "cells": {
+                            "type": "integer",
+                            "description": "Number of terminal cells to adjust",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Status message to flash across tmux status bar",
+                        },
+                    },
+                    "required": ["action"],
+                },
+                handler=lambda reg, params: reg._skill_tmux_control(params),
             )
         )

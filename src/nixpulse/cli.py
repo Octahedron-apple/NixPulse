@@ -113,7 +113,14 @@ def main(argv: list[str] | None = None) -> int:
         shell_file = daemon.provision(daemon.plan(args.intent), args.workspace)
         manager = TmuxManager(settings.session_name)
         layout = manager.create_layout(args.workspace)
-        manager.send_keys(layout.telemetry, "btop || top || while sleep 5; do date; done")
+        telemetry_cmd = (
+            "if [ $(tput lines 2>/dev/null || echo 0) -ge 24 ] && [ $(tput cols 2>/dev/null || echo 0) -ge 80 ]; then "
+            "btop; "
+            "else "
+            "htop || top || while sleep 5; do date; done; "
+            "fi"
+        )
+        manager.send_keys(layout.telemetry, telemetry_cmd)
         manager.send_keys(
             layout.control,
             f"python3 -m nixpulse.control --workspace {shlex.quote(str(args.workspace))}",

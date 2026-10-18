@@ -34,6 +34,13 @@ class TmuxManager:
     """Create and operate the NixPulse three-pane flight deck."""
 
     def __init__(self, session_name: str = "nixpulse-war-room", *, server=None) -> None:
+        # libtmux 0.61 uses unicode record separator '␞' which tmux replaces with '_'
+        # unless a UTF-8 locale is explicitly configured.
+        if "UTF-8" not in os.environ.get("LC_ALL", ""):
+            os.environ["LC_ALL"] = "C.UTF-8"
+        if "UTF-8" not in os.environ.get("LANG", ""):
+            os.environ["LANG"] = "C.UTF-8"
+
         self.session_name = session_name
         self.server = server or Server()
         self.session = None
@@ -91,6 +98,8 @@ class TmuxManager:
                     attach=False,
                     start_directory=str(directory),
                     window_name="war-room",
+                    x=160,
+                    y=50,
                 )
             window = session.windows[0]
             panes = list(window.panes)
@@ -131,7 +140,18 @@ class TmuxManager:
 
     def current_command(self, pane: Any) -> str:
         try:
-            return str(getattr(self._pane(pane), "pane_current_command", ""))
+            p = self._pane(pane)
+            if hasattr(p, "refresh"):
+                try:
+                    p.refresh()
+                except Exception:
+                    pass
+            cmd = getattr(p, "pane_current_command", "")
+            if not cmd and hasattr(p, "id"):
+                # Direct tmux query fallback
+                res = self.server.cmd("display-message", "-p", "-t", p.id, "#{pane_current_command}")
+                cmd = res.stdout[0] if res.stdout else ""
+            return str(cmd)
         except LibTmuxException as exc:
             raise self._server_error(exc) from exc
 
@@ -182,7 +202,7 @@ class TmuxManager:
         """Safely reload an idle pane without replacing its parent shell."""
 
         self.preflight(shell_file)
-        if not self.is_idle(pane):
+        if not self.wait_for_idle(pane, timeout=3.0):
             raise TmuxError("target pane is not idle; refusing to inject a reload")
         # Do not use ``exec``: a bad Nix expression must not kill the tmux pane.
         self.send_keys(
@@ -192,6 +212,46 @@ class TmuxManager:
             "nix-shell --pure --run 'bash -i' || "
             "echo '[NixPulse] reload failed; current shell preserved'",
         )
+
+    def set_layout(self, layout_name: str) -> None:
+        """Change tmux window layout (e.g. main-horizontal, even-horizontal, tiled)."""
+        valid = {"main-horizontal", "main-vertical", "even-horizontal", "even-vertical", "tiled"}
+        if layout_name not in valid:
+            raise TmuxError(f"invalid layout name: {layout_name!r}; must be one of {valid}")
+        try:
+            if self.window is not None:
+                self.window.select_layout(layout_name)
+            else:
+                session = self._existing_session()
+                if session and session.windows:
+                    session.windows[0].select_layout(layout_name)
+        except LibTmuxException as exc:
+            raise self._server_error(exc) from exc
+
+    def resize_pane(self, target: str = "telemetry", direction: str = "U", cells: int = 5) -> None:
+        """Resize target pane (sandbox, telemetry, control) by direction (U, D, L, R) and cells."""
+        pane_map = {
+            "sandbox": getattr(self.layout, "sandbox", None) if self.layout else None,
+            "telemetry": getattr(self.layout, "telemetry", None) if self.layout else None,
+            "control": getattr(self.layout, "control", None) if self.layout else None,
+        }
+        pane = pane_map.get(target)
+        try:
+            flag_map = {"U": "-U", "D": "-D", "L": "-L", "R": "-R", "up": "-U", "down": "-D", "left": "-L", "right": "-R"}
+            flag = flag_map.get(direction.upper(), "-U")
+            if pane is not None:
+                self.server.cmd("resize-pane", "-t", pane.id, flag, str(cells))
+            else:
+                self.server.cmd("resize-pane", flag, str(cells))
+        except LibTmuxException as exc:
+            raise self._server_error(exc) from exc
+
+    def display_message(self, message: str) -> None:
+        """Flash a notification banner across the tmux status line."""
+        try:
+            self.server.cmd("display-message", message)
+        except LibTmuxException as exc:
+            raise self._server_error(exc) from exc
 
     def attach(self) -> None:
         """Attach the current terminal using libtmux, not a tmux subprocess."""
@@ -206,3 +266,4 @@ class TmuxManager:
             self.server.kill_session(self.session_name)
         except LibTmuxException as exc:
             raise self._server_error(exc) from exc
+

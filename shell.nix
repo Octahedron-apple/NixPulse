@@ -39,6 +39,8 @@ pkgs.mkShell {
   shellHook = ''
     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath demoPackages}:$LD_LIBRARY_PATH"
     export OLLAMA_HOST="127.0.0.1:11434"
+    export LC_ALL="C.UTF-8"
+    export LANG="C.UTF-8"
 
     export NIXPULSE_STATE_DIR="''${XDG_RUNTIME_DIR:-/tmp}/nixpulse"
     export NIXPULSE_STDERR_FIFO="$NIXPULSE_STATE_DIR/stderr.pipe"

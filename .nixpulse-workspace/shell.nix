@@ -3,10 +3,10 @@ let
   libs = with pkgs; [  ];
 in
 pkgs.mkShell {
-  buildInputs = with pkgs; [ go sqlite hey htop ] ++ libs;
+  buildInputs = with pkgs; [ go sqlite ] ++ libs;
   shellHook = ''
-    export NIXPULSE_STATE_DIR='/tmp/nixpulse'
-    export NIXPULSE_STDERR_LOG='/tmp/nixpulse/stderr.log'
+    export NIXPULSE_STATE_DIR='/run/user/1001/nixpulse'
+    export NIXPULSE_STDERR_LOG='/run/user/1001/nixpulse/stderr.log'
     mkdir -p "$NIXPULSE_STATE_DIR"
     # Commands can opt into deterministic stderr capture with: 2>"$NIXPULSE_STDERR_LOG"
     nixpulse_prompt_status() {
