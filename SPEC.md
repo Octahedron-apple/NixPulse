@@ -200,9 +200,13 @@ MLH/
         ├── __init__.py           # Version metadata
         ├── config.py             # Settings (Ollama host, models, paths)
         ├── cli.py                # Command & Control Deck (Pane 2 interface)
-        ├── control.py            # Interactive operator approval loop
+        ├── control.py            # Interactive TUI REPL & approval loop (Pane 2)
         ├── daemon.py             # Background watcher and orchestrator
         ├── daemon_cli.py         # FIFO/log polling entry point
+        ├── skills.py             # Extensible Skills Engine registry & runners
+        ├── context.py            # Workspace file ingestion & token budget allocator
+        ├── flake.py              # Modern Nix flake & devShell manager
+        ├── tasks.py              # Deterministic task runner & script generator
         ├── manifest.py           # In-memory Nix manifest generator & validator
         ├── llm/
         │   ├── client.py         # Ollama HTTP client with JSON mode
@@ -211,16 +215,3 @@ MLH/
             ├── manager.py        # libtmux session, pane, and layout controller
             └── watcher.py        # Pane state and FIFO/stderr monitor
 ```
-
----
-
-## 7. Live Demo Script (2-Minute Judging Walkthrough)
-
-- **0:00 – 0:30 (Workspace Setup):**
-  Launch `nixpulse`. User types intent into Pane 2: *"Setup Go web service with SQLite and load tester"*. Tmux automatically tiles (Panes 0, 1, 2), loads `btop`, generates `shell.nix`, and initializes Pane 0 instantaneously from cached `/nix/store`.
-- **0:30 – 1:15 (Deterministic Failure Trigger):**
-  Run a build command requiring `zlib.h` in Pane 0 (`gcc -lz -o test test.c`). The failure is captured via the stderr hook. Pane 2 flags the incident within ~1–2 seconds with Gemma’s diagnosis and remediation recommendation.
-- **1:15 – 1:45 (In-Place Hot Patch):**
-  User presses `Enter` in Pane 2. Daemon validates `shell.nix` via `nix-instantiate`, updates `shellHook` with `LD_LIBRARY_PATH`, and issues guarded reload in Pane 0. Re-running the command succeeds immediately.
-- **1:45 – 2:00 (Pitch Close):**
-  Reiterate zero-cloud, 100% local inference on RTX 3050 Mobile, reproducible isolation, and instant recovery.

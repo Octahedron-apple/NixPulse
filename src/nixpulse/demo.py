@@ -85,7 +85,10 @@ def run_tmux_demo(
     manager = TmuxManager(session_name)
     layout = manager.create_layout(root)
     manager.send_keys(layout.telemetry, "btop || top || while sleep 5; do date; done")
-    manager.send_keys(layout.control, "printf '\\033[36mNixPulse control deck ready\\033[0m\\n'")
+    manager.send_keys(
+        layout.control,
+        f"python3 -m nixpulse.control --workspace {root}",
+    )
     manager.send_keys(
         layout.sandbox,
         "printf '\\033[31mfatal error: zlib.h: No such file or directory\\033[0m\\n' >&2; false",

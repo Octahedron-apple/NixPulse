@@ -1,13 +1,13 @@
-"""Explicit, minimal Ollama HTTP client.
+"""Explicit Ollama HTTP client with JSON generation and native tool calling.
 
-The client is inert until ``generate_json`` is called.  NixPulse's normal
-offline demo uses a deterministic adapter and never constructs a request.
+Supports both single-shot JSON prompt generation and multi-turn chat loops with
+native OpenAI/Ollama function calling.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import requests
 
@@ -21,7 +21,7 @@ class OllamaClient:
         self,
         host: str = "127.0.0.1:11434",
         model: str = "hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M",
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         session: requests.Session | None = None,
     ) -> None:
         self.base_url = host.rstrip("/")
@@ -62,3 +62,37 @@ class OllamaClient:
         if not isinstance(parsed, dict):
             raise OllamaError("Ollama JSON response must be an object")
         return parsed
+
+    def chat_with_tools(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        num_ctx: int = 2048,
+    ) -> Mapping[str, Any]:
+        """Make a chat completion request to Ollama with optional function tools."""
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": list(messages),
+            "stream": False,
+            "options": {"num_ctx": num_ctx},
+        }
+        if tools:
+            payload["tools"] = list(tools)
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/api/chat", json=payload, timeout=self.timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise OllamaError(f"Ollama chat request failed: {exc}") from exc
+
+        if not isinstance(data, Mapping):
+            raise OllamaError("Ollama chat response must be a JSON object")
+        message = data.get("message")
+        if not isinstance(message, Mapping):
+            raise OllamaError("Ollama chat response missing 'message' object")
+        return message

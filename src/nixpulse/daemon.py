@@ -89,7 +89,9 @@ class NixPulseDaemon:
         tmux_manager: Any | None = None,
     ) -> None:
         self.config = config
-        self.ollama = ollama
+        self.ollama = ollama or OllamaClient(
+            host=self.config.ollama_host, model=self.config.model_name
+        )
         self.tmux = tmux_manager
         self.manifest: WorkspaceManifest | None = None
         self.shell_file: Path | None = None
@@ -98,14 +100,15 @@ class NixPulseDaemon:
     def model_enabled(self) -> bool:
         return self.ollama is not None
 
-    def plan(self, intent: str, *, use_model: bool = False) -> IntentPlan:
-        if use_model:
-            if self.ollama is None:
-                raise RuntimeError("model use requested but no Ollama client is configured")
-            payload = self.ollama.generate_json(
-                intent.strip(), system=INTENT_SYSTEM_PROMPT
-            )
-            return parse_intent(payload)
+    def plan(self, intent: str, *, use_model: bool = True) -> IntentPlan:
+        if use_model and self.ollama is not None:
+            try:
+                payload = self.ollama.generate_json(
+                    intent.strip(), system=INTENT_SYSTEM_PROMPT
+                )
+                return parse_intent(payload)
+            except Exception:
+                pass
         return offline_intent_plan(intent)
 
     def provision(self, plan: IntentPlan, workspace: str | Path) -> Path:
@@ -120,19 +123,21 @@ class NixPulseDaemon:
         self.shell_file = write_shell_nix(destination / "shell.nix", self.manifest)
         return self.shell_file
 
-    def diagnose(self, output: str, *, exit_code: int | None = None, use_model: bool = False) -> Remediation | None:
+    def diagnose(self, output: str, *, exit_code: int | None = None, use_model: bool = True) -> Remediation | None:
         incident = detect_incident(output, exit_code=exit_code)
         if incident is None:
             return None
-        if use_model:
-            if self.ollama is None:
-                raise RuntimeError("model use requested but no Ollama client is configured")
-            diagnosis = parse_incident(
-                self.ollama.generate_json(
-                    truncate_output(output), system=INCIDENT_SYSTEM_PROMPT
+        diagnosis = None
+        if use_model and self.ollama is not None:
+            try:
+                diagnosis = parse_incident(
+                    self.ollama.generate_json(
+                        truncate_output(output), system=INCIDENT_SYSTEM_PROMPT
+                    )
                 )
-            )
-        else:
+            except Exception:
+                pass
+        if diagnosis is None:
             diagnosis = offline_diagnosis(incident)
         return Remediation(incident, diagnosis)
 
