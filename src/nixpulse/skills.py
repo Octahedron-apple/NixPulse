@@ -58,10 +58,21 @@ class SkillRegistry:
         self.workspace = Path(workspace).expanduser().resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.context = WorkspaceContext(self.workspace)
-        self.task_runner = TaskRunner(self.workspace)
+        self.task_runner = self._init_task_runner()
         self.tmux_manager = tmux_manager
         self._skills: dict[str, SkillDefinition] = {}
         self._register_default_skills()
+
+    def _init_task_runner(self) -> TaskRunner:
+        """Auto-discover tasks from workspace Makefile, justfile, tasks.yaml, or tasks.json."""
+        for filename in ("Makefile", "justfile", "tasks.yaml", "tasks.yml", "tasks.json"):
+            candidate = self.workspace / filename
+            if candidate.is_file():
+                try:
+                    return TaskRunner(self.workspace, tasks=candidate)
+                except Exception:
+                    pass
+        return TaskRunner(self.workspace)
 
     def register(self, skill: SkillDefinition) -> None:
         self._skills[skill.name] = skill
@@ -111,10 +122,26 @@ class SkillRegistry:
     # Default Skills Handlers
     # -------------------------------------------------------------------------
 
+    def _skill_list_files(self, params: Mapping[str, Any]) -> SkillResult:
+        """List files in the workspace or subdirectory (equivalent to ls)."""
+        path_arg = params.get("path") or "."
+        target = self.context.safe_path(path_arg, must_exist=True)
+        if not target.is_dir():
+            return SkillResult("list_files", False, f"Not a directory: {path_arg}")
+        
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+        lines = []
+        for e in entries:
+            kind = "dir" if e.is_dir() else "file"
+            size = e.stat().st_size if e.is_file() else 0
+            rel = e.relative_to(self.workspace)
+            lines.append(f"{rel} [{kind}] ({size} bytes)" if e.is_file() else f"{rel}/ [{kind}]")
+        
+        output = "\n".join(lines) if lines else "(empty directory)"
+        return SkillResult("list_files", True, output, {"path": str(path_arg), "count": len(entries)})
+
     def _skill_read_file(self, params: Mapping[str, Any]) -> SkillResult:
-        path = params.get("path")
-        if not path:
-            return SkillResult("read_file", False, "Missing 'path' parameter")
+        path = params.get("path") or "."
         start_line = int(params.get("start_line", 1))
         end_line = int(params["end_line"]) if "end_line" in params and params["end_line"] is not None else None
         max_lines = int(params["max_lines"]) if "max_lines" in params and params["max_lines"] is not None else None
@@ -132,8 +159,24 @@ class SkillRegistry:
             {"path": str(path), "start_line": start_line, "end_line": end_line},
         )
 
+    def _skill_write_file(self, params: Mapping[str, Any]) -> SkillResult:
+        path = params.get("path")
+        content = params.get("content")
+        if not path:
+            return SkillResult("write_file", False, "Missing 'path' parameter")
+        if content is None:
+            return SkillResult("write_file", False, "Missing 'content' parameter")
+
+        target = self.context.safe_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(content), encoding="utf-8")
+        rel = target.relative_to(self.workspace)
+        return SkillResult("write_file", True, f"Successfully wrote {len(str(content))} bytes to {rel}", {"path": str(rel)})
+
     def _skill_write_script(self, params: Mapping[str, Any]) -> SkillResult:
-        name = str(params.get("name", "script"))
+        name = str(params.get("name", "script")).strip()
+        if name.endswith(".sh"):
+            name = name[:-3]
         content = params.get("content")
         steps = params.get("steps")
         if not content and not steps:
@@ -161,8 +204,17 @@ class SkillRegistry:
     def _skill_manage_task(self, params: Mapping[str, Any]) -> SkillResult:
         task_name = params.get("task")
         action = params.get("action", "run")
+        # Refresh task runner dynamically if new task files were added
+        self.task_runner = self._init_task_runner()
         if action == "list":
             tasks = list(self.task_runner.tasks.keys())
+            if not tasks:
+                return SkillResult(
+                    "manage_task",
+                    True,
+                    "No tasks configured yet. Create a Makefile, justfile, tasks.yaml, or tasks.json in the workspace root.",
+                    {"tasks": []},
+                )
             return SkillResult("manage_task", True, f"Configured tasks: {', '.join(tasks)}", {"tasks": tasks})
 
         if not task_name:
@@ -299,20 +351,47 @@ class SkillRegistry:
     def _register_default_skills(self) -> None:
         self.register(
             SkillDefinition(
+                name="list_files",
+                description="List files and directories in the workspace (equivalent to 'ls'). Use to discover files before reading.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative directory path (defaults to workspace root '.')"},
+                    },
+                },
+                handler=lambda reg, params: reg._skill_list_files(params),
+            )
+        )
+        self.register(
+            SkillDefinition(
                 name="read_file",
                 description="Targeted file inspection, line-range slicing, or directory tree bounds.",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative workspace file path"},
+                        "path": {"type": "string", "description": "Relative workspace file path or directory (defaults to current directory '.')"},
                         "start_line": {"type": "integer", "description": "Start line (1-indexed)"},
                         "end_line": {"type": "integer", "description": "End line (inclusive)"},
                         "max_lines": {"type": "integer", "description": "Max lines to return"},
                         "tree": {"type": "boolean", "description": "Set true to return directory tree"},
                     },
-                    "required": ["path"],
                 },
                 handler=lambda reg, params: reg._skill_read_file(params),
+            )
+        )
+        self.register(
+            SkillDefinition(
+                name="write_file",
+                description="Create or overwrite a source/config file in the workspace (e.g. test.c, Makefile, justfile).",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative workspace file path"},
+                        "content": {"type": "string", "description": "Full file content to write"},
+                    },
+                    "required": ["path", "content"],
+                },
+                handler=lambda reg, params: reg._skill_write_file(params),
             )
         )
         self.register(

@@ -41,14 +41,24 @@ You assist developers in managing Nix environments, diagnosing build/runtime err
 inspecting workspace context, running deterministic tasks, and dynamically controlling the tmux war room.
 
 You have access to the following tools:
+- list_files: List files and folders in workspace (equivalent to 'ls'). Always use this first if you do not know which files exist!
 - read_file: Targeted file inspection, line-range slicing, or directory trees.
+- write_file: Create or edit project files (e.g. source files like test.c, config files, Makefiles, justfiles).
 - write_script: Generate validated bash scripts in .nixpulse-scripts/ with chmod +x.
 - manage_task: Orchestrate deterministic tasks (build/test/bench) with bounded logs.
 - flake_manage: Generate or update flake.nix (devShells) with syntax pre-flight checks.
 - run_command: Send a guarded command to Pane 0 (dev shell) after checking idle prompt state.
-- tmux_control: Modify the tmux session directly (action='layout' with 'main-horizontal', 'even-horizontal', 'tiled'; action='resize' with target and direction; action='notify' with message).
+- tmux_control: Modify the tmux session directly:
+  * action='split': Use when the user asks to "add more panes", "spawn pane", "split pane", or "open another terminal".
+  * action='layout': Use when the user asks to arrange existing panes (e.g. 'main-horizontal', 'even-horizontal', 'tiled', 'main-vertical').
+  * action='resize': Adjust pane dimensions (direction='U'/'D'/'L'/'R', cells=number).
+  * action='notify': Flash a message in tmux status bar.
 
-Always choose appropriate tool calls to fulfill the developer's instructions.
+When the developer asks you to fix or examine code (e.g. 'fix the c file'):
+1. If the exact file name isn't stated, call list_files to see what files exist (e.g. find test.c).
+2. Read the file with read_file.
+3. Propose and apply the fix with write_file.
+Always choose the appropriate tool call to fulfill the developer's instructions.
 Keep your text concise and terminal-friendly."""
 
 
@@ -65,6 +75,7 @@ PROMPT_STYLE = Style.from_dict({
 COMMAND_COMPLETIONS = [
     # Colon commands
     ":skills",
+    ":ls",
     ":tree",
     ":read",
     ":tasks",
@@ -76,7 +87,9 @@ COMMAND_COMPLETIONS = [
     ":exit",
     ":quit",
     # Skills
+    "list_files",
     "read_file",
+    "write_file",
     "write_script",
     "manage_task",
     "flake_manage",
@@ -118,16 +131,29 @@ class ControlDeck:
         
         # If running inside tmux or a session exists, auto-attach to live TmuxManager
         if tmux_manager is None:
-            from nixpulse.tmux.manager import TmuxManager
+            from nixpulse.tmux.manager import TmuxManager, PaneLayout
             session_name = settings.session_name
             try:
                 tm = TmuxManager(session_name)
                 if tm.session_exists():
+                    sess = tm._existing_session()
+                    if sess and sess.windows:
+                        win = sess.windows[0]
+                        panes = list(win.panes)
+                        if len(panes) >= 3:
+                            tm.layout = PaneLayout(panes[0], panes[1], panes[2])
                     tmux_manager = tm
             except Exception:
                 tmux_manager = None
 
         self.daemon = daemon or NixPulseDaemon(tmux_manager=tmux_manager)
+        
+        # If tmux sandbox pane exists, lock workspace to its live CWD
+        if tmux_manager and tmux_manager.layout and tmux_manager.layout.sandbox:
+            pane_cwd = tmux_manager.get_pane_cwd(tmux_manager.layout.sandbox)
+            if pane_cwd and pane_cwd.is_dir():
+                self.workspace = pane_cwd
+
         self.skills = SkillRegistry(self.workspace, tmux_manager=tmux_manager)
         
         # Build candidates strictly from commands and registered skills
@@ -164,14 +190,80 @@ class ControlDeck:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
+        # Active background incident watcher on dev shell (Pane 0)
+        self._seen_incidents: set[str] = set()
+        self._pending_incident = None
+        self._watcher_running = True
+        import threading
+        self._watcher_thread = threading.Thread(target=self._pane0_incident_watcher, daemon=True)
+        self._watcher_thread.start()
+
+    def _pane0_incident_watcher(self) -> None:
+        """Continuously check Pane 0 buffer for compiler/runtime failure signatures."""
+        import time
+        from nixpulse.tmux.watcher import detect_incident
+        while self._watcher_running:
+            try:
+                time.sleep(1.0)
+                if not self.skills.tmux_manager or not self.skills.tmux_manager.layout:
+                    continue
+                sandbox = self.skills.tmux_manager.layout.sandbox
+                content = self.skills.tmux_manager.capture_pane(sandbox, lines=30)
+                if not content:
+                    continue
+                incident = detect_incident(content)
+                if incident:
+                    import hashlib
+                    fingerprint = hashlib.sha256(incident.evidence.encode()).hexdigest()
+                    if fingerprint not in self._seen_incidents:
+                        self._seen_incidents.add(fingerprint)
+                        # Queue incident cleanly to avoid concurrent stdin reads with prompt_toolkit
+                        self._pending_incident = incident
+                        # If prompt_toolkit is currently waiting, wake it up cleanly:
+                        try:
+                            if hasattr(self.session, "app") and self.session.app.is_running:
+                                self.session.app.exit(result="__INCIDENT_DETECTED__")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    def check_pending_incidents(self) -> None:
+        """Process any pending crash incidents from the main thread where stdin is owned."""
+        if not self._pending_incident:
+            return
+        incident = self._pending_incident
+        self._pending_incident = None
+
+        self.console.print("\n")
+        self.log_event("crash", f"[bold red]Compiler/runtime crash detected in Pane 0![/bold red]", "red")
+        self.log_event("crash", f"Evidence: [yellow]{incident.summary}[/yellow]", "yellow")
+        
+        remediation = self.daemon.diagnose(incident.evidence, use_model=True)
+        if remediation and remediation.diagnosis.suggested_package:
+            pkg = remediation.diagnosis.suggested_package
+            expl = remediation.diagnosis.explanation or f"Missing dependency {pkg}"
+            if self.render_approval(
+                f"Auto-Remediate Crash ({incident.kind})",
+                f"Add pkgs.{pkg} to environment?\nExplanation: {expl}",
+                diff_or_detail=f"Package: {pkg}\nEvidence: {incident.evidence}"
+            ):
+                # Update flake and shell
+                self.skills.execute("flake_manage", {"packages": [pkg], "build_inputs": [pkg]})
+                self.log_event("skill", f"Added pkgs.{pkg} to workspace flake.nix", "green")
+                self.skills.execute("run_command", {"command": "nix develop -c $SHELL || nix-shell || true"})
+                self.log_event("tmux", "Guarded reload dispatched to Pane 0", "green")
+
     def print_banner(self) -> None:
+        model_name = self.daemon.ollama.model if self.daemon.ollama else self.daemon.config.model_name
+        host_name = self.daemon.ollama.base_url if self.daemon.ollama else self.daemon.config.ollama_host
         self.console.print(
             Panel(
-                "[bold cyan]NixPulse Command & Control Deck[/bold cyan] [dim](Pane 2)[/dim]\n"
-                f"[dim]Model: [bold green]{self.daemon.config.model_name}[/bold green] • Host: {self.daemon.config.ollama_host}[/dim]\n"
+                "[bold cyan]NixPulse Command & Control Deck[/bold cyan]\n"
+                f"[dim]Model: [bold green]{model_name}[/bold green] • Host: {host_name}[/dim]\n"
                 "[dim]Tab-to-Complete • Ghost Text (History & Suggestions) • Dynamic Tmux Control[/dim]\n"
                 "Type instructions: [italic]e.g. check directory tree, switch layout to even-horizontal, add sqlite to flake[/italic]\n"
-                "Commands: [yellow]:skills[/yellow], [yellow]:tree[/yellow], [yellow]:read <file>[/yellow], [yellow]:layout <name>[/yellow], [yellow]:tasks[/yellow], [yellow]:run <task>[/yellow], [yellow]:exit[/yellow]",
+                "Commands: [yellow]:skills[/yellow], [yellow]:ls[/yellow], [yellow]:tree[/yellow], [yellow]:read <file>[/yellow], [yellow]:layout <name>[/yellow], [yellow]:tasks[/yellow], [yellow]:run <task>[/yellow], [yellow]:exit[/yellow]",
                 title="[bold green]● LIVE AGENT[/bold green] NixPulse War Room",
                 border_style="cyan",
             )
@@ -197,8 +289,8 @@ class ControlDeck:
 
     def _execute_skill_with_approval(self, name: str, args: dict[str, Any]) -> SkillResult:
         # Read-only skills execute without stopping for approval
-        if name == "read_file":
-            self.log_event("skill", f"Calling [cyan]read_file[/cyan]({args})")
+        if name in {"read_file", "list_files"}:
+            self.log_event("skill", f"Calling [cyan]{name}[/cyan]({args})")
             return self.skills.execute(name, args)
 
         # Tmux manipulation skills
@@ -223,9 +315,22 @@ class ControlDeck:
                 self.log_event("tmux", "Dispatched devShell reload to Pane 0", "green")
             return res
 
+        if name == "write_file":
+            target_path = args.get("path", "file")
+            content = args.get("content", "")
+            preview = content[:200] + ("..." if len(content) > 200 else "")
+            if not self.render_approval("Write File", f"Write to {target_path}", preview):
+                return SkillResult(name, False, "Operation cancelled by operator.")
+            res = self.skills.execute(name, args)
+            self.log_event("skill", res.output, "green")
+            return res
+
         if name == "write_script":
-            script_name = args.get("name", "script")
-            if not self.render_approval("Write Script", f"Generate validated script .nixpulse-scripts/{script_name}.sh"):
+            script_name = str(args.get("name", "script")).strip()
+            if script_name.endswith(".sh"):
+                script_name = script_name[:-3]
+            target_rel = Path(".nixpulse-scripts") / f"{script_name}.sh"
+            if not self.render_approval("Write Script", f"Generate validated script {target_rel}"):
                 return SkillResult(name, False, "Operation cancelled by operator.")
             res = self.skills.execute(name, args)
             self.log_event("skill", res.output, "green")
@@ -251,7 +356,17 @@ class ControlDeck:
 
         return self.skills.execute(name, args)
 
+    def sync_workspace_with_pane(self) -> None:
+        """Keep agent strictly locked to the dev shell's live current working directory."""
+        if self.skills.tmux_manager and self.skills.tmux_manager.layout and self.skills.tmux_manager.layout.sandbox:
+            pane_cwd = self.skills.tmux_manager.get_pane_cwd(self.skills.tmux_manager.layout.sandbox)
+            if pane_cwd and pane_cwd.is_dir() and pane_cwd != self.workspace:
+                self.workspace = pane_cwd
+                self.skills = SkillRegistry(self.workspace, tmux_manager=self.skills.tmux_manager)
+                self.log_event("workspace", f"Agent workspace locked to live dev shell CWD: {pane_cwd}", "cyan")
+
     def handle_intent(self, user_input: str) -> None:
+        self.sync_workspace_with_pane()
         text = user_input.strip()
         if not text:
             return
@@ -271,6 +386,10 @@ class ControlDeck:
                 for s in self.skills.list_skills():
                     table.add_row(s["name"], s["description"])
                 self.console.print(table)
+                return
+            elif cmd == "ls":
+                res = self.skills.execute("list_files", {"path": arg or "."})
+                self.console.print(Panel(res.output, title=f"Directory Listing: {arg or '.'}", border_style="dim"))
                 return
             elif cmd == "tree":
                 res = self.skills.execute("read_file", {"path": arg or ".", "tree": True})
@@ -293,9 +412,9 @@ class ControlDeck:
                     self.log_event("tmux", res.output, "magenta")
                     return
                 # Otherwise, route through the model as natural language instruction
-                text = f"Adjust tmux window layout to match: {arg}"
-                self.log_event("model", f"Resolving layout request with {self.daemon.config.model_name}...")
-                # Fall through to model handler below with modified text
+                text = arg
+                self.log_event("model", f"Resolving instruction with {self.daemon.config.model_name}: {arg}")
+                # Fall through to model handler below with user text
 
             elif cmd == "resize":
                 # :resize <direction> <cells>
@@ -347,15 +466,32 @@ class ControlDeck:
 
         try:
             tools = self.skills.as_ollama_tools()
-            response = self.daemon.ollama.chat_with_tools(self.messages, tools=tools)
-            tool_calls = response.get("tool_calls")
-            content = response.get("content", "")
+            
+            # Agent loop: allow multi-turn tool execution until model produces final answer
+            max_turns = 5
+            for turn in range(max_turns):
+                response = self.daemon.ollama.chat_with_tools(self.messages, tools=tools)
+                tool_calls = response.get("tool_calls")
+                content = response.get("content", "")
 
-            if content:
-                self.console.print(Panel(content, title=f"[cyan]{self.daemon.config.model_name}[/cyan]", border_style="cyan"))
+                if content:
+                    self.console.print(Panel(content, title=f"[cyan]{self.daemon.config.model_name}[/cyan]", border_style="cyan"))
 
-            if tool_calls:
+                if not tool_calls:
+                    self.messages.append({"role": "assistant", "content": content})
+                    break
+
+                # Append assistant's turn with tool_calls so the conversation structure is valid
+                self.messages.append({
+                    "role": "assistant",
+                    "content": content or "",
+                    "tool_calls": tool_calls,
+                })
+
+                # Deduplicate identical tool calls in the same turn
+                seen_calls_in_turn = set()
                 for call in tool_calls:
+                    call_id = call.get("id", f"call_{turn}")
                     fn = call.get("function", {})
                     fn_name = fn.get("name", "")
                     fn_args = fn.get("arguments", {})
@@ -365,12 +501,18 @@ class ControlDeck:
                         except Exception:
                             fn_args = {}
 
+                    call_key = (fn_name, json.dumps(fn_args, sort_keys=True))
+                    if call_key in seen_calls_in_turn:
+                        continue
+                    seen_calls_in_turn.add(call_key)
+
                     self.log_event("agent", f"Model requested skill: [bold green]{fn_name}[/bold green]")
                     result = self._execute_skill_with_approval(fn_name, fn_args)
 
                     # Feed result back to conversation context
                     self.messages.append({
                         "role": "tool",
+                        "tool_call_id": call_id,
                         "content": result.output,
                     })
 
@@ -379,8 +521,6 @@ class ControlDeck:
                         title=f"Skill Result: {fn_name}",
                         border_style="green" if result.ok else "red",
                     ))
-            else:
-                self.messages.append({"role": "assistant", "content": content})
 
         except Exception as exc:
             self.log_event("fallback", f"Direct model call failed ({exc}); falling back to deterministic intent plan.", "yellow")
@@ -397,13 +537,18 @@ class ControlDeck:
     def run(self) -> int:
         self.print_banner()
         while True:
+            self.check_pending_incidents()
             try:
                 user_input = self.session.prompt(
-                    HTML("<ansicyan><b>Pane2:ControlDeck</b></ansicyan> &gt; ")
+                    HTML("<ansicyan><b>NixPulse</b></ansicyan> &gt; ")
                 )
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n[dim]Leaving Control Deck...[/dim]")
                 break
+
+            if user_input == "__INCIDENT_DETECTED__":
+                self.check_pending_incidents()
+                continue
 
             try:
                 self.handle_intent(user_input)
@@ -415,16 +560,33 @@ class ControlDeck:
         return 0
 
 
-def run_control_deck(workspace: str | Path = ".nixpulse-workspace", tmux_manager: Any | None = None) -> int:
-    deck = ControlDeck(workspace, tmux_manager=tmux_manager)
+def run_control_deck(
+    workspace: str | Path = ".nixpulse-workspace",
+    tmux_manager: Any | None = None,
+    *,
+    model: str = "",
+    openrouter: bool = False,
+) -> int:
+    client = None
+    if openrouter or model:
+        m_name = model or "google/gemma-4-26b-a4b-it:free"
+        host = "https://openrouter.ai" if (openrouter or "openrouter.ai" in m_name) else settings.ollama_host
+        api_key = settings.api_key if (openrouter or "openrouter.ai" in host) else ""
+        from nixpulse.llm.client import OllamaClient
+        client = OllamaClient(host=host, model=m_name, api_key=api_key)
+    
+    daemon = NixPulseDaemon(ollama=client) if client else None
+    deck = ControlDeck(workspace, tmux_manager=tmux_manager, daemon=daemon)
     return deck.run()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path(".nixpulse-workspace"))
+    parser.add_argument("--model", type=str, default="")
+    parser.add_argument("--openrouter", action="store_true")
     args = parser.parse_args(argv)
-    return run_control_deck(args.workspace)
+    return run_control_deck(args.workspace, model=args.model, openrouter=args.openrouter)
 
 
 if __name__ == "__main__":

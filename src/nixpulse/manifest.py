@@ -80,8 +80,6 @@ def resolve_packages(tokens: Iterable[str]) -> tuple[str, ...]:
         attribute = resolve_package(token)
         if attribute not in resolved:
             resolved.append(attribute)
-    if not resolved:
-        raise ManifestError("At least one package is required")
     return tuple(resolved)
 
 

@@ -1,92 +1,92 @@
 # NixPulse
 
-NixPulse is a privacy-first, terminal-native flight deck for disposable Nix
-development shells. It plans a workspace, renders a safe `shell.nix`, watches
-deterministic stderr/status signals, and presents operator-approved
-remediation. The Ollama/Gemma adapter is scaffolded but never called by
-default.
-
-Configured model:
+NixPulse is a terminal-native, privacy-first coding flight deck and autonomous agent for Nix development environments. It combines live three-pane `libtmux` orchestration, real-time system telemetry, and a stateful Command & Control Deck with an extensible Skills Engine powered by local Gemma (via Ollama) or cloud models via OpenRouter.
 
 ```text
-hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M
+┌─────────────────────────────────────────────────────────────┐
+│                       Pane 0: DevShell                      │
+│      Isolated Nix sandbox running bash with live toolchain  │
+├──────────────────────────────┬──────────────────────────────┤
+│    Pane 1: Telemetry (btop)  │    Pane 2: Control Deck      │
+│  Real-time CPU/mem resource  │  Interactive agent REPL with │
+│  monitoring & incident triage│  Skills Engine & ghost text  │
+└──────────────────────────────┴──────────────────────────────┘
 ```
 
-## Run the actual libtmux war room through Nix
+---
+
+## Key Features
+
+- **Autonomous Agent Flight Deck**: Interactive REPL with ghost text suggestions and Tab completion strictly focused on skills and commands.
+- **Skills Engine**:
+  - `list_files` / `:ls`: Workspace directory inspection.
+  - `read_file` / `:read`: Targeted file reading, line slicing, or directory trees (`:tree`).
+  - `write_file`: Create and edit workspace source and config files.
+  - `write_script`: Generate validated executable bash scripts in `.nixpulse-scripts/`.
+  - `manage_task` / `:tasks` / `:run`: Workspace task runner parsing `Makefile`, `justfile`, `tasks.yaml`, and `tasks.json`.
+  - `flake_manage`: Generate and patch `flake.nix` devShells with pre-flight syntax checks.
+  - `run_command`: Send guarded shell commands to the dev pane with idle-state verification.
+  - `tmux_control` / `:layout`: Dynamic window layouts (`even-horizontal`, `main-horizontal`, `tiled`), pane splitting, and resizing.
+- **Live Background Crash Watcher**: Monitors the dev shell for compiler errors (e.g. missing C headers, missing commands) and automatically offers one-click package remediation.
+- **Impure by Default**: Dev shell inherits host utilities (like `micro`, `git`, and system configs) while tracking packages cleanly in Nix.
+- **Live CWD Synchronization**: The agent automatically follows whatever directory you `cd` into inside the dev shell.
+- **Dual Inference Engine**: Run completely offline with local Ollama (`hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M`) or with cloud models via OpenRouter (`google/gemma-4-26b-a4b-it:free`).
+
+---
+
+## Getting Started
+
+### 1. Launch a Clean Vanilla Sandbox (Recommended)
+
+Start an impure sandbox attached to the war room:
 
 ```bash
-nix-shell --run 'python3 -m nixpulse.demo'
+# Using local Ollama
+nix-shell --run 'python3 -m nixpulse.cli start --vanilla --attach'
+
+# Using OpenRouter (e.g. google/gemma-4-26b-a4b-it:free)
+nix-shell --run 'python3 -m nixpulse.cli start --openrouter --vanilla --attach'
 ```
 
-For the real three-pane session, use `--tmux`. This creates panes through
-`libtmux`, starts telemetry, injects a deterministic failure into the sandbox,
-detects it, patches the manifest, and guardedly reloads the sandbox. It does
-not call Ollama.
+### 2. Launch with an Initial Intent
+
+Provision an environment pre-seeded with tools:
 
 ```bash
-nix-shell --run 'python3 -m nixpulse.demo --tmux --attach'
+nix-shell --run 'python3 -m nixpulse.cli start "Set up a C environment with zlib" --attach'
 ```
 
-Without `--attach`, the session remains running in the background and the
-command prints its pane IDs:
+### 3. Open Only the Interactive Control Deck
+
+If you just want to run the REPL directly:
 
 ```bash
-nix-shell --run 'python3 -m nixpulse.demo --tmux'
+nix-shell --run 'python3 -m nixpulse.cli deck'
 ```
 
-The top-level command is also the live launcher. In an interactive terminal
-it creates and attaches to the default `nixpulse` session:
+---
+
+## Interactive Control Deck Commands
+
+| Command | Action |
+| :--- | :--- |
+| *Natural Language* | Ask the agent directly: <br>• `"fix the c file"`<br>• `"write a script to benchmark the web service"`<br>• `"change layout to even-horizontal"`<br>• `"add sqlite to the flake"` |
+| `:skills` | List all available Skills Engine modules. |
+| `:ls` | List files and folders in the active workspace directory. |
+| `:tree` | Display the directory hierarchy tree. |
+| `:read <file>` | Inspect a file. |
+| `:tasks` | List configured tasks in `justfile`, `Makefile`, `tasks.yaml`, or `tasks.json`. |
+| `:run <task>` | Execute a configured task through the deterministic runner. |
+| `:layout <name>` | Change tmux layout (`even-horizontal`, `main-horizontal`, `tiled`, `main-vertical`). |
+| `:check` | Validate `flake.nix` syntax. |
+| `:exit` | Exit the Control Deck. |
+
+---
+
+## Running Tests
+
+All 21 comprehensive test suites (including live tool execution) can be run inside `nix-shell`:
 
 ```bash
-nix-shell --run 'python3 -m nixpulse.cli'
+nix-shell --run 'python3 -m unittest discover tests'
 ```
-
-The compatibility entry point is also available:
-
-```bash
-nix-shell --run 'python3 demo_flow.py --workspace /tmp/nixpulse-demo'
-```
-
-## CLI scaffold
-
-```bash
-# Show configuration without creating tmux.
-nix-shell --run 'python3 -m nixpulse.cli status'
-
-# Produce a deterministic package plan.
-nix-shell --run 'python3 -m nixpulse.cli plan "Set up a Go service with SQLite and a load generator"'
-
-# Render a validated shell.nix.
-nix-shell --run 'python3 -m nixpulse.cli render /tmp/nixpulse-workspace go sqlite hey \
-  --library zlib'
-```
-
-`nixpulse start` is the real tmux/Nix integration boundary. It remains offline
-with respect to the model; it only uses Nix and tmux when explicitly run.
-
-## Optional Ollama integration
-
-Install the project dependencies, start Ollama, and pull the configured model
-only when you are ready to exercise local inference:
-
-```bash
-nix-shell --run 'ollama pull hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M'
-```
-
-The only CLI path that sends a request is explicit:
-
-```bash
-nix-shell --run 'python3 -m nixpulse.cli plan --use-model "Set up a Go service with SQLite"'
-```
-
-The model returns generic package tokens in JSON. Python validates and maps
-those tokens through a small allow-list before writing Nix; raw model-provided
-Nix attributes are rejected.
-
-## Tests
-
-```bash
-nix-shell --run 'python3 -m unittest discover -s tests -v'
-```
-
-See [SPEC.md](SPEC.md) for the architecture and live-demo design.

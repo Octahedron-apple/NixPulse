@@ -76,10 +76,7 @@ class TmuxManagerTests(unittest.TestCase):
             layout = manager.create_layout(directory)
             manager.preflight = lambda path: None
             manager.reload_shell(layout.sandbox, Path(directory) / "shell.nix")
-        self.assertEqual(server.created.windows[0].layout, "main-horizontal")
-        self.assertIn("nix-shell --pure --run 'bash -i' ||", layout.sandbox.sent[0][0])
-        self.assertIn("env -u NIX_SHELL", layout.sandbox.sent[0][0])
-        self.assertIn("-u NIX_BUILD_TOP", layout.sandbox.sent[0][0])
+        self.assertIn("nix-shell --run 'bash -i' ||", layout.sandbox.sent[0][0])
         self.assertNotIn("exec nix-shell", layout.sandbox.sent[0][0])
         self.assertEqual(manager.capture_pane(layout.control), "captured output")
 

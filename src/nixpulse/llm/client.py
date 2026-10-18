@@ -22,17 +22,39 @@ class OllamaClient:
         host: str = "127.0.0.1:11434",
         model: str = "hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M",
         timeout: float = 60.0,
+        api_key: str | None = None,
         session: requests.Session | None = None,
     ) -> None:
+        self.api_key = api_key or ""
         self.base_url = host.rstrip("/")
         if not self.base_url.startswith(("http://", "https://")):
             self.base_url = f"http://{self.base_url}"
         self.model = model
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.is_openrouter = "openrouter.ai" in self.base_url or bool(self.api_key and "127.0.0.1" not in self.base_url)
 
     def generate_json(self, prompt: str, *, system: str = "") -> Mapping[str, Any]:
-        """Make one explicit structured-generation request to Ollama."""
+        """Make one explicit structured-generation request to Ollama or OpenRouter."""
+        if self.is_openrouter:
+            headers = {"Authorization": f"Bearer {self.api_key}", "HTTP-Referer": "https://github.com/Octahedron-apple/NixPulse"}
+            payload = {
+                "model": self.model,
+                "messages": [
+                    *([{"role": "system", "content": system}] if system else []),
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+            endpoint = f"{self.base_url}/chat/completions" if "/v1" in self.base_url or "/api/v1" in self.base_url else f"{self.base_url}/api/v1/chat/completions"
+            try:
+                response = self.session.post(endpoint, json=payload, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                return json.loads(content)
+            except Exception as exc:
+                raise OllamaError(f"OpenRouter request failed: {exc}") from exc
 
         payload = {
             "model": self.model,
@@ -68,9 +90,48 @@ class OllamaClient:
         messages: Sequence[Mapping[str, Any]],
         *,
         tools: Sequence[Mapping[str, Any]] | None = None,
-        num_ctx: int = 2048,
+        num_ctx: int = 4096,
     ) -> Mapping[str, Any]:
-        """Make a chat completion request to Ollama with optional function tools."""
+        """Make a chat completion request to Ollama or OpenRouter with optional function tools."""
+
+        if self.is_openrouter:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://github.com/Octahedron-apple/NixPulse",
+                "X-Title": "NixPulse",
+            }
+            # Convert tool messages to OpenAI standard format if needed
+            converted_messages = []
+            for msg in messages:
+                if msg.get("role") == "tool":
+                    converted_messages.append({
+                        "role": "tool",
+                        "content": str(msg.get("content", "")),
+                        "tool_call_id": msg.get("tool_call_id", "call_1"),
+                    })
+                else:
+                    converted_messages.append(dict(msg))
+
+            payload = {
+                "model": self.model,
+                "messages": converted_messages,
+            }
+            if tools:
+                payload["tools"] = list(tools)
+
+            endpoint = f"{self.base_url}/chat/completions" if "/v1" in self.base_url or "/api/v1" in self.base_url else f"{self.base_url}/api/v1/chat/completions"
+            try:
+                response = self.session.post(endpoint, json=payload, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                data = response.json()
+                msg = data["choices"][0]["message"]
+                return {
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                    "tool_calls": msg.get("tool_calls"),
+                }
+            except Exception as exc:
+                raise OllamaError(f"OpenRouter chat request failed: {exc}") from exc
 
         payload: dict[str, Any] = {
             "model": self.model,

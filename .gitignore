@@ -1,0 +1,24 @@
+# NixPulse ephemeral workspaces and generated assets
+.nixpulse-workspace/
+.nixpulse-workspace*/
+.nixpulse-scripts/
+.nixpulse-logs/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.venv/
+env/
+venv/
+
+# Environment and secrets
+.env
+*.local

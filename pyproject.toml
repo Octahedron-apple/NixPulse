@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nixpulse"
 version = "0.1.0"
-description = "NixPulse Ephemeral War Room: Autonomous incident response and system telemetry triage orchestrated with tmux, Ollama, and Gemma."
+description = "NixPulse Ephemeral War Room: Terminal-native autonomous coding flight deck with live agent capabilities, skills engine, and dynamic tmux orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

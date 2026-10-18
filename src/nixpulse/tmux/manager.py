@@ -155,6 +155,17 @@ class TmuxManager:
         except LibTmuxException as exc:
             raise self._server_error(exc) from exc
 
+    def get_pane_cwd(self, pane: Any) -> Path | None:
+        """Query the real-time working directory of a tmux pane."""
+        try:
+            p = self._pane(pane)
+            res = self.server.cmd("display-message", "-p", "-t", p.id, "#{pane_current_path}")
+            if res.stdout and res.stdout[0].strip():
+                return Path(res.stdout[0].strip()).resolve()
+        except Exception:
+            pass
+        return None
+
     def is_idle(self, pane: Any) -> bool:
         return self.current_command(pane).strip().lower() in {
             "bash",
@@ -207,9 +218,7 @@ class TmuxManager:
         # Do not use ``exec``: a bad Nix expression must not kill the tmux pane.
         self.send_keys(
             pane,
-            "env -u NIX_SHELL -u NIX_BUILD_SHELL -u IN_NIX_SHELL "
-            "-u NIX_BUILD_TOP -u TMPDIR -u TEMP -u TMP "
-            "nix-shell --pure --run 'bash -i' || "
+            "nix-shell --run 'bash -i' || "
             "echo '[NixPulse] reload failed; current shell preserved'",
         )
 

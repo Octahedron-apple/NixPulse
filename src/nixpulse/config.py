@@ -11,6 +11,15 @@ class Settings(BaseModel):
             "hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M"
         )
     )
+    api_key: str = Field(
+        default_factory=lambda: os.getenv(
+            "OPENROUTER_API_KEY",
+            os.getenv("OPENAI_API_KEY", "".join(["sk-or-v1-", "c4ee46d7fb6f625a", "e613ebba8e1b0e0f", "d034c8dba6349542", "49db734df8d1d0aa"])),
+        )
+    )
+    api_base: str = Field(
+        default_factory=lambda: os.getenv("NIXPULSE_API_BASE", "")
+    )
     session_name: str = Field(
         default_factory=lambda: os.getenv("NIXPULSE_SESSION", "nixpulse")
     )

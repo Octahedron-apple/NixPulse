@@ -21,6 +21,7 @@ from nixpulse.control import run_control_deck
 from nixpulse.daemon import NixPulseDaemon
 from nixpulse.demo import run_demo, run_tmux_demo
 from nixpulse.llm.client import OllamaClient
+from nixpulse.llm.prompts import IntentPlan
 from nixpulse.manifest import WorkspaceManifest, write_shell_nix
 from nixpulse.tmux.manager import TmuxManager
 
@@ -47,12 +48,17 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--library", action="append", default=[])
 
     start = commands.add_parser("start", help="provision and create the tmux war room")
-    start.add_argument("intent")
+    start.add_argument("intent", nargs="?", default="", help="Initial provisioning intent (leave empty for vanilla sandbox)")
     start.add_argument("--workspace", type=Path, default=Path(".nixpulse-workspace"))
     start.add_argument("--attach", action="store_true")
+    start.add_argument("--model", type=str, default="", help="Override model name (e.g. google/gemma-4-31b-it:free)")
+    start.add_argument("--openrouter", action="store_true", help="Use OpenRouter API with google/gemma-4-31b-it:free")
+    start.add_argument("--vanilla", action="store_true", help="Launch clean vanilla sandbox without pre-baked packages")
 
     deck = commands.add_parser("deck", help="run the interactive control pane")
     deck.add_argument("--workspace", type=Path, default=Path(".nixpulse-workspace"))
+    deck.add_argument("--model", type=str, default="")
+    deck.add_argument("--openrouter", action="store_true")
 
     commands.add_parser("status", help="show configuration without creating tmux")
     return parser
@@ -109,8 +115,21 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[green]Wrote[/green] {path}")
         return 0
     if args.command == "start":
-        daemon = NixPulseDaemon()
-        shell_file = daemon.provision(daemon.plan(args.intent), args.workspace)
+        # Configure model provider (OpenRouter or Ollama)
+        model = args.model or ("google/gemma-4-26b-a4b-it:free" if args.openrouter else settings.model_name)
+        host = "https://openrouter.ai" if (args.openrouter or "openrouter.ai" in model) else settings.ollama_host
+        api_key = settings.api_key if (args.openrouter or "openrouter.ai" in host) else ""
+
+        client = OllamaClient(host=host, model=model, api_key=api_key)
+        daemon = NixPulseDaemon(ollama=client)
+
+        # Vanilla mode: clean environment with only bash/coreutils (or whatever intent explicitly specifies)
+        if args.vanilla or not args.intent:
+            intent_plan = IntentPlan(packages=())
+        else:
+            intent_plan = daemon.plan(args.intent)
+
+        shell_file = daemon.provision(intent_plan, args.workspace)
         manager = TmuxManager(settings.session_name)
         layout = manager.create_layout(args.workspace)
         telemetry_cmd = (
@@ -121,10 +140,15 @@ def main(argv: list[str] | None = None) -> int:
             "fi"
         )
         manager.send_keys(layout.telemetry, telemetry_cmd)
-        manager.send_keys(
-            layout.control,
-            f"python3 -m nixpulse.control --workspace {shlex.quote(str(args.workspace))}",
-        )
+        workspace_abs = Path(args.workspace).resolve()
+
+        ctrl_cmd = f"python3 -m nixpulse.control --workspace {shlex.quote(str(workspace_abs))}"
+        if args.openrouter:
+            ctrl_cmd += " --openrouter"
+        if args.model:
+            ctrl_cmd += f" --model {shlex.quote(args.model)}"
+
+        manager.send_keys(layout.control, ctrl_cmd)
         manager.reload_shell(layout.sandbox, shell_file)
         manager.wait_for_idle(layout.sandbox)
         console.print(f"[green]War room ready:[/green] {settings.session_name}")
