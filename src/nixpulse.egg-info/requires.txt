@@ -1,0 +1,5 @@
+libtmux
+rich
+prompt-toolkit
+requests
+pydantic

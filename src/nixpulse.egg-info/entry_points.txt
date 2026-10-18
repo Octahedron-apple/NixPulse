@@ -1,0 +1,2 @@
+[console_scripts]
+nixpulse = nixpulse.cli:main

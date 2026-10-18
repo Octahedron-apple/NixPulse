@@ -42,12 +42,13 @@ pkgs.mkShell {
 
     export NIXPULSE_STATE_DIR="''${XDG_RUNTIME_DIR:-/tmp}/nixpulse"
     export NIXPULSE_STDERR_FIFO="$NIXPULSE_STATE_DIR/stderr.pipe"
+    export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
     mkdir -p "$NIXPULSE_STATE_DIR"
 
     echo "=========================================================="
     echo "  NixPulse Ephemeral War Room Environment Initialized     "
     echo "  Python: $(python3 --version) | tmux: $(tmux -V)         "
-    echo "  Target Model: gemma2:2b (Ollama @ $OLLAMA_HOST)         "
+    echo "  Target Model: hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M (Ollama @ $OLLAMA_HOST) "
     echo "=========================================================="
   '';
 }

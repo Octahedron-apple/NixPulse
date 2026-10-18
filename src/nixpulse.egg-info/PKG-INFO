@@ -1,0 +1,89 @@
+Metadata-Version: 2.4
+Name: nixpulse
+Version: 0.1.0
+Summary: NixPulse Ephemeral War Room: Autonomous incident response and system telemetry triage orchestrated with tmux, Ollama, and Gemma.
+Author: MLH Hackathon Team
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: libtmux
+Requires-Dist: rich
+Requires-Dist: prompt-toolkit
+Requires-Dist: requests
+Requires-Dist: pydantic
+
+# NixPulse
+
+NixPulse is a privacy-first, terminal-native flight deck for disposable Nix
+development shells. It plans a workspace, renders a safe `shell.nix`, watches
+deterministic stderr/status signals, and presents operator-approved
+remediation. The Ollama/Gemma adapter is scaffolded but never called by
+default.
+
+Configured model:
+
+```text
+hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M
+```
+
+## Offline rehearsal (no Ollama, Nix, or tmux required)
+
+```bash
+PYTHONPATH=src python -m nixpulse.demo
+```
+
+The rehearsal provisions an isolated temporary workspace, simulates a missing
+`zlib.h` failure, detects it after ANSI stripping, proposes `pkgs.zlib`, and
+rewrites the generated manifest. It reports `Model calls: 0`.
+
+The compatibility entry point is also available:
+
+```bash
+PYTHONPATH=src python demo_flow.py --workspace /tmp/nixpulse-demo
+```
+
+## CLI scaffold
+
+```bash
+# Show configuration; this does not contact Ollama.
+PYTHONPATH=src python -m nixpulse.cli
+
+# Produce a deterministic package plan.
+PYTHONPATH=src python -m nixpulse.cli plan \
+  "Set up a Go service with SQLite and a load generator"
+
+# Render a validated shell.nix.
+PYTHONPATH=src python -m nixpulse.cli render /tmp/nixpulse-workspace go sqlite hey \
+  --library zlib
+```
+
+`nixpulse start` is the real tmux/Nix integration boundary. It remains offline
+with respect to the model; it only uses Nix and tmux when explicitly run.
+
+## Optional Ollama integration
+
+Install the project dependencies, start Ollama, and pull the configured model
+only when you are ready to exercise local inference:
+
+```bash
+ollama pull hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M
+```
+
+The only CLI path that sends a request is explicit:
+
+```bash
+PYTHONPATH=src python -m nixpulse.cli plan \
+  --use-model "Set up a Go service with SQLite"
+```
+
+The model returns generic package tokens in JSON. Python validates and maps
+those tokens through a small allow-list before writing Nix; raw model-provided
+Nix attributes are rejected.
+
+## Tests
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+See [SPEC.md](SPEC.md) for the architecture and live-demo design.

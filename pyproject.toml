@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nixpulse"
+version = "0.1.0"
+description = "NixPulse Ephemeral War Room: Autonomous incident response and system telemetry triage orchestrated with tmux, Ollama, and Gemma."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "MLH Hackathon Team" }
+]
+dependencies = [
+    "libtmux",
+    "rich",
+    "prompt-toolkit",
+    "requests",
+    "pydantic"
+]
+
+[project.scripts]
+nixpulse = "nixpulse.cli:main"
+nixpulse-daemon = "nixpulse.daemon_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
